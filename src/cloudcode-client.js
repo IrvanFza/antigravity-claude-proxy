@@ -26,6 +26,7 @@ import {
 import { cacheSignature } from './format/signature-cache.js';
 import { formatDuration, sleep } from './utils/helpers.js';
 import { isRateLimitError, isAuthError } from './errors.js';
+import { logger } from './utils/logger.js';
 
 /**
  * Check if an error is a rate limit error (429 or RESOURCE_EXHAUSTED)
@@ -102,14 +103,14 @@ function parseResetTime(responseOrError, errorText = '') {
             const seconds = parseInt(retryAfter, 10);
             if (!isNaN(seconds)) {
                 resetMs = seconds * 1000;
-                console.log(`[CloudCode] Retry-After header: ${seconds}s`);
+                logger.debug(`[CloudCode] Retry-After header: ${seconds}s`);
             } else {
                 // Try parsing as HTTP date
                 const date = new Date(retryAfter);
                 if (!isNaN(date.getTime())) {
                     resetMs = date.getTime() - Date.now();
                     if (resetMs > 0) {
-                        console.log(`[CloudCode] Retry-After date: ${retryAfter}`);
+                        logger.debug(`[CloudCode] Retry-After date: ${retryAfter}`);
                     } else {
                         resetMs = null;
                     }
@@ -124,7 +125,7 @@ function parseResetTime(responseOrError, errorText = '') {
                 const resetTimestamp = parseInt(ratelimitReset, 10) * 1000;
                 resetMs = resetTimestamp - Date.now();
                 if (resetMs > 0) {
-                    console.log(`[CloudCode] x-ratelimit-reset: ${new Date(resetTimestamp).toISOString()}`);
+                    logger.debug(`[CloudCode] x-ratelimit-reset: ${new Date(resetTimestamp).toISOString()}`);
                 } else {
                     resetMs = null;
                 }
@@ -138,7 +139,7 @@ function parseResetTime(responseOrError, errorText = '') {
                 const seconds = parseInt(resetAfter, 10);
                 if (!isNaN(seconds) && seconds > 0) {
                     resetMs = seconds * 1000;
-                    console.log(`[CloudCode] x-ratelimit-reset-after: ${seconds}s`);
+                    logger.debug(`[CloudCode] x-ratelimit-reset-after: ${seconds}s`);
                 }
             }
         }
@@ -148,11 +149,37 @@ function parseResetTime(responseOrError, errorText = '') {
     if (!resetMs) {
         const msg = (responseOrError instanceof Error ? responseOrError.message : errorText) || '';
 
+        // Try to extract "quotaResetDelay" first (e.g. "754.431528ms" or "1.5s")
+        // This is Google's preferred format for rate limit reset delay
+        const quotaDelayMatch = msg.match(/quotaResetDelay[:\s"]+(\d+(?:\.\d+)?)(ms|s)/i);
+        if (quotaDelayMatch) {
+            const value = parseFloat(quotaDelayMatch[1]);
+            const unit = quotaDelayMatch[2].toLowerCase();
+            resetMs = unit === 's' ? Math.ceil(value * 1000) : Math.ceil(value);
+            logger.debug(`[CloudCode] Parsed quotaResetDelay from body: ${resetMs}ms`);
+        }
+
+        // Try to extract "quotaResetTimeStamp" (ISO format like "2025-12-31T07:00:47Z")
+        if (!resetMs) {
+            const quotaTimestampMatch = msg.match(/quotaResetTimeStamp[:\s"]+(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)/i);
+            if (quotaTimestampMatch) {
+                const resetTime = new Date(quotaTimestampMatch[1]).getTime();
+                if (!isNaN(resetTime)) {
+                    resetMs = resetTime - Date.now();
+                    if (resetMs > 0) {
+                        logger.debug(`[CloudCode] Parsed quotaResetTimeStamp: ${quotaTimestampMatch[1]} (${resetMs}ms)`);
+                    } else {
+                        resetMs = null;
+                    }
+                }
+            }
+        }
+
         // Try to extract "retry-after-ms" or "retryDelay" - check seconds format first (e.g. "7739.23s")
         const secMatch = msg.match(/(?:retry[-_]?after[-_]?ms|retryDelay)[:\s"]+([\d\.]+)(?:s\b|s")/i);
         if (secMatch) {
             resetMs = Math.ceil(parseFloat(secMatch[1]) * 1000);
-            console.log(`[CloudCode] Parsed retry seconds from body (precise): ${resetMs}ms`);
+            logger.debug(`[CloudCode] Parsed retry seconds from body (precise): ${resetMs}ms`);
         }
 
         if (!resetMs) {
@@ -161,7 +188,7 @@ function parseResetTime(responseOrError, errorText = '') {
             const msMatch = msg.match(/(?:retry[-_]?after[-_]?ms|retryDelay)[:\s"]+(\d+)(?:\s*ms)?(?![\w.])/i);
             if (msMatch) {
                 resetMs = parseInt(msMatch[1], 10);
-                console.log(`[CloudCode] Parsed retry-after-ms from body: ${resetMs}ms`);
+                logger.debug(`[CloudCode] Parsed retry-after-ms from body: ${resetMs}ms`);
             }
         }
 
@@ -170,7 +197,7 @@ function parseResetTime(responseOrError, errorText = '') {
             const secMatch = msg.match(/retry\s+(?:after\s+)?(\d+)\s*(?:sec|s\b)/i);
             if (secMatch) {
                 resetMs = parseInt(secMatch[1], 10) * 1000;
-                console.log(`[CloudCode] Parsed retry seconds from body: ${secMatch[1]}s`);
+                logger.debug(`[CloudCode] Parsed retry seconds from body: ${secMatch[1]}s`);
             }
         }
 
@@ -191,7 +218,7 @@ function parseResetTime(responseOrError, errorText = '') {
                     resetMs = parseInt(durationMatch[6], 10) * 1000;
                 }
                 if (resetMs) {
-                    console.log(`[CloudCode] Parsed duration from body: ${formatDuration(resetMs)}`);
+                    logger.debug(`[CloudCode] Parsed duration from body: ${formatDuration(resetMs)}`);
                 }
             }
         }
@@ -204,7 +231,7 @@ function parseResetTime(responseOrError, errorText = '') {
                 if (!isNaN(resetTime)) {
                     resetMs = resetTime - Date.now();
                     if (resetMs > 0) {
-                        console.log(`[CloudCode] Parsed ISO reset time: ${isoMatch[1]}`);
+                        logger.debug(`[CloudCode] Parsed ISO reset time: ${isoMatch[1]}`);
                     } else {
                         resetMs = null;
                     }
@@ -290,7 +317,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
         // Handle waiting for sticky account
         if (!account && waitMs > 0) {
-            console.log(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
+            logger.info(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
             await sleep(waitMs);
             accountManager.clearExpiredLimits();
             account = accountManager.getCurrentStickyAccount();
@@ -311,7 +338,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
                 // Wait for reset (applies to both single and multi-account modes)
                 const accountCount = accountManager.getAccountCount();
-                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
+                logger.warn(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
                 await sleep(allWaitMs);
                 accountManager.clearExpiredLimits();
                 account = accountManager.pickNext();
@@ -328,7 +355,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
             const project = await accountManager.getProjectForAccount(account, token);
             const payload = buildCloudCodeRequest(anthropicRequest, project);
 
-            console.log(`[CloudCode] Sending request for model: ${model}`);
+            logger.debug(`[CloudCode] Sending request for model: ${model}`);
 
             // Try each endpoint
             let lastError = null;
@@ -346,11 +373,11 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
                     if (!response.ok) {
                         const errorText = await response.text();
-                        console.log(`[CloudCode] Error at ${endpoint}: ${response.status} - ${errorText}`);
+                        logger.warn(`[CloudCode] Error at ${endpoint}: ${response.status} - ${errorText}`);
 
                         if (response.status === 401) {
                             // Auth error - clear caches and retry with fresh token
-                            console.log('[CloudCode] Auth error, refreshing token...');
+                            logger.warn('[CloudCode] Auth error, refreshing token...');
                             accountManager.clearTokenCache(account.email);
                             accountManager.clearProjectCache(account.email);
                             continue;
@@ -358,7 +385,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
                         if (response.status === 429) {
                             // Rate limited on this endpoint - try next endpoint first (DAILY → PROD)
-                            console.log(`[CloudCode] Rate limited at ${endpoint}, trying next endpoint...`);
+                            logger.debug(`[CloudCode] Rate limited at ${endpoint}, trying next endpoint...`);
                             const resetMs = parseResetTime(response, errorText);
                             // Keep minimum reset time across all 429 responses
                             if (!lastError?.is429 || (resetMs && (!lastError.resetMs || resetMs < lastError.resetMs))) {
@@ -369,6 +396,11 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
                         if (response.status >= 400) {
                             lastError = new Error(`API error ${response.status}: ${errorText}`);
+                            // If it's a 5xx error, wait a bit before trying the next endpoint
+                            if (response.status >= 500) {
+                                logger.warn(`[CloudCode] ${response.status} error, waiting 1s before retry...`);
+                                await sleep(1000);
+                            }
                             continue;
                         }
                     }
@@ -380,14 +412,14 @@ export async function sendMessage(anthropicRequest, accountManager) {
 
                     // Non-thinking models use regular JSON
                     const data = await response.json();
-                    console.log('[CloudCode] Response received');
+                    logger.debug('[CloudCode] Response received');
                     return convertGoogleToAnthropic(data, anthropicRequest.model);
 
                 } catch (endpointError) {
                     if (is429Error(endpointError)) {
                         throw endpointError; // Re-throw to trigger account switch
                     }
-                    console.log(`[CloudCode] Error at ${endpoint}:`, endpointError.message);
+                    logger.warn(`[CloudCode] Error at ${endpoint}:`, endpointError.message);
                     lastError = endpointError;
                 }
             }
@@ -396,7 +428,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
             if (lastError) {
                 // If all endpoints returned 429, mark account as rate-limited
                 if (lastError.is429) {
-                    console.log(`[CloudCode] All endpoints rate-limited for ${account.email}`);
+                    logger.warn(`[CloudCode] All endpoints rate-limited for ${account.email}`);
                     accountManager.markRateLimited(account.email, lastError.resetMs);
                     throw new Error(`Rate limited: ${lastError.errorText}`);
                 }
@@ -406,15 +438,22 @@ export async function sendMessage(anthropicRequest, accountManager) {
         } catch (error) {
             if (is429Error(error)) {
                 // Rate limited - already marked, continue to next account
-                console.log(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
+                logger.info(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
                 continue;
             }
             if (isAuthInvalidError(error)) {
                 // Auth invalid - already marked, continue to next account
-                console.log(`[CloudCode] Account ${account.email} has invalid credentials, trying next...`);
+                logger.warn(`[CloudCode] Account ${account.email} has invalid credentials, trying next...`);
                 continue;
             }
             // Non-rate-limit error: throw immediately
+            // UNLESS it's a 500 error, then we treat it as a "soft" failure for this account and try the next one
+            if (error.message.includes('API error 5') || error.message.includes('500') || error.message.includes('503')) {
+                logger.warn(`[CloudCode] Account ${account.email} failed with 5xx error, trying next...`);
+                accountManager.pickNext(); // Force advance to next account
+                continue;
+            }
+
             throw error;
         }
     }
@@ -502,7 +541,7 @@ async function parseThinkingSSEResponse(response, originalModel) {
                     }
                 }
             } catch (e) {
-                    console.log('[CloudCode] SSE parse warning:', e.message, 'Raw:', jsonText.slice(0, 100));
+                    logger.debug('[CloudCode] SSE parse warning:', e.message, 'Raw:', jsonText.slice(0, 100));
                 }
         }
     }
@@ -516,10 +555,10 @@ async function parseThinkingSSEResponse(response, originalModel) {
     };
 
     const partTypes = finalParts.map(p => p.thought ? 'thought' : (p.functionCall ? 'functionCall' : 'text'));
-    console.log('[CloudCode] Response received (SSE), part types:', partTypes);
+    logger.debug('[CloudCode] Response received (SSE), part types:', partTypes);
     if (finalParts.some(p => p.thought)) {
         const thinkingPart = finalParts.find(p => p.thought);
-        console.log('[CloudCode] Thinking signature length:', thinkingPart?.thoughtSignature?.length || 0);
+        logger.debug('[CloudCode] Thinking signature length:', thinkingPart?.thoughtSignature?.length || 0);
     }
 
     return convertGoogleToAnthropic(accumulatedResponse, originalModel);
@@ -553,7 +592,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
 
         // Handle waiting for sticky account
         if (!account && waitMs > 0) {
-            console.log(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
+            logger.info(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
             await sleep(waitMs);
             accountManager.clearExpiredLimits();
             account = accountManager.getCurrentStickyAccount();
@@ -574,7 +613,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
 
                 // Wait for reset (applies to both single and multi-account modes)
                 const accountCount = accountManager.getAccountCount();
-                console.log(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
+                logger.warn(`[CloudCode] All ${accountCount} account(s) rate-limited. Waiting ${formatDuration(allWaitMs)}...`);
                 await sleep(allWaitMs);
                 accountManager.clearExpiredLimits();
                 account = accountManager.pickNext();
@@ -591,7 +630,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
             const project = await accountManager.getProjectForAccount(account, token);
             const payload = buildCloudCodeRequest(anthropicRequest, project);
 
-            console.log(`[CloudCode] Starting stream for model: ${model}`);
+            logger.debug(`[CloudCode] Starting stream for model: ${model}`);
 
             // Try each endpoint for streaming
             let lastError = null;
@@ -607,7 +646,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
 
                     if (!response.ok) {
                         const errorText = await response.text();
-                        console.log(`[CloudCode] Stream error at ${endpoint}: ${response.status} - ${errorText}`);
+                        logger.warn(`[CloudCode] Stream error at ${endpoint}: ${response.status} - ${errorText}`);
 
                         if (response.status === 401) {
                             // Auth error - clear caches and retry
@@ -618,7 +657,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
 
                         if (response.status === 429) {
                             // Rate limited on this endpoint - try next endpoint first (DAILY → PROD)
-                            console.log(`[CloudCode] Stream rate limited at ${endpoint}, trying next endpoint...`);
+                            logger.debug(`[CloudCode] Stream rate limited at ${endpoint}, trying next endpoint...`);
                             const resetMs = parseResetTime(response, errorText);
                             // Keep minimum reset time across all 429 responses
                             if (!lastError?.is429 || (resetMs && (!lastError.resetMs || resetMs < lastError.resetMs))) {
@@ -628,20 +667,27 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
                         }
 
                         lastError = new Error(`API error ${response.status}: ${errorText}`);
+                        
+                        // If it's a 5xx error, wait a bit before trying the next endpoint
+                        if (response.status >= 500) {
+                            logger.warn(`[CloudCode] ${response.status} stream error, waiting 1s before retry...`);
+                            await sleep(1000);
+                        }
+                        
                         continue;
                     }
 
                     // Stream the response - yield events as they arrive
                     yield* streamSSEResponse(response, anthropicRequest.model);
 
-                    console.log('[CloudCode] Stream completed');
+                    logger.debug('[CloudCode] Stream completed');
                     return;
 
                 } catch (endpointError) {
                     if (is429Error(endpointError)) {
                         throw endpointError; // Re-throw to trigger account switch
                     }
-                    console.log(`[CloudCode] Stream error at ${endpoint}:`, endpointError.message);
+                    logger.warn(`[CloudCode] Stream error at ${endpoint}:`, endpointError.message);
                     lastError = endpointError;
                 }
             }
@@ -650,7 +696,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
             if (lastError) {
                 // If all endpoints returned 429, mark account as rate-limited
                 if (lastError.is429) {
-                    console.log(`[CloudCode] All endpoints rate-limited for ${account.email}`);
+                    logger.warn(`[CloudCode] All endpoints rate-limited for ${account.email}`);
                     accountManager.markRateLimited(account.email, lastError.resetMs);
                     throw new Error(`Rate limited: ${lastError.errorText}`);
                 }
@@ -660,15 +706,22 @@ export async function* sendMessageStream(anthropicRequest, accountManager) {
         } catch (error) {
             if (is429Error(error)) {
                 // Rate limited - already marked, continue to next account
-                console.log(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
+                logger.info(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
                 continue;
             }
             if (isAuthInvalidError(error)) {
                 // Auth invalid - already marked, continue to next account
-                console.log(`[CloudCode] Account ${account.email} has invalid credentials, trying next...`);
+                logger.warn(`[CloudCode] Account ${account.email} has invalid credentials, trying next...`);
                 continue;
             }
             // Non-rate-limit error: throw immediately
+            // UNLESS it's a 500 error, then we treat it as a "soft" failure for this account and try the next one
+            if (error.message.includes('API error 5') || error.message.includes('500') || error.message.includes('503')) {
+                logger.warn(`[CloudCode] Account ${account.email} failed with 5xx stream error, trying next...`);
+                accountManager.pickNext(); // Force advance to next account
+                continue;
+            }
+
             throw error;
         }
     }
