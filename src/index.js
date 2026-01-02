@@ -42,17 +42,37 @@ app.listen(PORT, () => {
     const border = '║';
     const align = (text) => text + ' '.repeat(Math.max(0, width - text.length));
     
+    // Build Control section dynamically
+    let controlSection = '║  Control:                                                    ║\n';
+    if (!isDebug) {
+        controlSection += '║    --debug            Enable debug logging                   ║\n';
+    }
+    if (!isFallbackEnabled) {
+        controlSection += '║    --fallback         Enable model fallback on quota exhaust ║\n';
+    }
+    controlSection += '║    Ctrl+C             Stop server                            ║';
+
+    // Build status section if any modes are active
+    let statusSection = '';
+    if (isDebug || isFallbackEnabled) {
+        statusSection = '║                                                              ║\n';
+        statusSection += '║  Active Modes:                                               ║\n';
+        if (isDebug) {
+            statusSection += '║    ✓ Debug mode enabled                                      ║\n';
+        }
+        if (isFallbackEnabled) {
+            statusSection += '║    ✓ Model fallback enabled                                  ║\n';
+        }
+    }
+
     logger.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║           Antigravity Claude Proxy Server                    ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ${border}  ${align(`Server running at: http://localhost:${PORT}`)}${border}
-║                                                              ║
-║  Control:                                                    ║
-║    --debug            Enable debug logging                   ║
-║    --fallback         Enable model fallback on quota exhaust ║
-║    Ctrl+C             Stop server                            ║
+${statusSection}║                                                              ║
+${controlSection}
 ║                                                              ║
 ║  Endpoints:                                                  ║
 ║    POST /v1/messages         - Anthropic Messages API        ║
