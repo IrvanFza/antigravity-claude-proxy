@@ -26,11 +26,9 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
 
         const accounts = (config.accounts || []).map(acc => ({
             ...acc,
-            isRateLimited: acc.isRateLimited || false,
-            rateLimitResetTime: acc.rateLimitResetTime || null,
             lastUsed: acc.lastUsed || null,
             // Reset invalid flag on startup - give accounts a fresh chance to refresh
-            isInvalid: false, // Reset invalid flag on startup
+            isInvalid: false,
             invalidReason: null,
             modelRateLimits: acc.modelRateLimits || {}
         }));
@@ -70,9 +68,8 @@ export function loadDefaultAccount(dbPath) {
             const account = {
                 email: authData.email || 'default@antigravity',
                 source: 'database',
-                isRateLimited: false,
-                rateLimitResetTime: null,
-                lastUsed: null
+                lastUsed: null,
+                modelRateLimits: {}
             };
 
             const tokenCache = new Map();
@@ -115,8 +112,6 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
                 apiKey: acc.source === 'manual' ? acc.apiKey : undefined,
                 projectId: acc.projectId || undefined,
                 addedAt: acc.addedAt || undefined,
-                isRateLimited: acc.isRateLimited,
-                rateLimitResetTime: acc.rateLimitResetTime,
                 isInvalid: acc.isInvalid || false,
                 invalidReason: acc.invalidReason || null,
                 modelRateLimits: acc.modelRateLimits || {},

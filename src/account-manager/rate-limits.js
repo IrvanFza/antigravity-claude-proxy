@@ -2,6 +2,7 @@
  * Rate Limit Management
  *
  * Handles rate limit tracking and state management for accounts.
+ * All rate limits are model-specific.
  */
 
 import { DEFAULT_COOLDOWN_MS } from '../constants.js';
@@ -9,46 +10,42 @@ import { formatDuration } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * Check if all accounts are rate-limited
+ * Check if all accounts are rate-limited for a specific model
  *
- * @param {string} [modelId] - Optional model ID to check rate limits for
+ * @param {Array} accounts - Array of account objects
+ * @param {string} modelId - Model ID to check rate limits for
  * @returns {boolean} True if all accounts are rate-limited
  */
-export function isAllRateLimited(accounts, modelId = null) {
+export function isAllRateLimited(accounts, modelId) {
     if (accounts.length === 0) return true;
-    
-    if (modelId) {
-        return accounts.every(acc => {
-            // Check global rate limit first
-            if (acc.isRateLimited) return true;
-            // Then check model-specific limit
-            const modelLimits = acc.modelRateLimits || {};
-            const limit = modelLimits[modelId];
-            return limit && limit.isRateLimited && limit.resetTime > Date.now();
-        });
-    }
+    if (!modelId) return false; // No model specified = not rate limited
 
-    return accounts.every(acc => acc.isRateLimited);
+    return accounts.every(acc => {
+        if (acc.isInvalid) return true; // Invalid accounts count as unavailable
+        const modelLimits = acc.modelRateLimits || {};
+        const limit = modelLimits[modelId];
+        return limit && limit.isRateLimited && limit.resetTime > Date.now();
+    });
 }
 
 /**
- * Get list of available (non-rate-limited, non-invalid) accounts
+ * Get list of available (non-rate-limited, non-invalid) accounts for a model
  *
- * @param {string} [modelId] - Optional model ID to filter by
+ * @param {Array} accounts - Array of account objects
+ * @param {string} [modelId] - Model ID to filter by
  * @returns {Array} Array of available account objects
  */
 export function getAvailableAccounts(accounts, modelId = null) {
     return accounts.filter(acc => {
         if (acc.isInvalid) return false;
-        if (acc.isRateLimited) return false;
-        
+
         if (modelId && acc.modelRateLimits && acc.modelRateLimits[modelId]) {
             const limit = acc.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {
                 return false;
             }
         }
-        
+
         return true;
     });
 }
@@ -74,15 +71,6 @@ export function clearExpiredLimits(accounts) {
     let cleared = 0;
 
     for (const account of accounts) {
-        // Clear global limits
-        if (account.isRateLimited && account.rateLimitResetTime && account.rateLimitResetTime <= now) {
-            account.isRateLimited = false;
-            account.rateLimitResetTime = null;
-            cleared++;
-            logger.success(`[AccountManager] Rate limit expired for: ${account.email}`);
-        }
-
-        // Clear model-specific limits
         if (account.modelRateLimits) {
             for (const [modelId, limit] of Object.entries(account.modelRateLimits)) {
                 if (limit.isRateLimited && limit.resetTime <= now) {
@@ -105,8 +93,6 @@ export function clearExpiredLimits(accounts) {
  */
 export function resetAllRateLimits(accounts) {
     for (const account of accounts) {
-        account.isRateLimited = false;
-        account.rateLimitResetTime = null;
         if (account.modelRateLimits) {
             for (const key of Object.keys(account.modelRateLimits)) {
                 account.modelRateLimits[key] = { isRateLimited: false, resetTime: null };
@@ -117,41 +103,34 @@ export function resetAllRateLimits(accounts) {
 }
 
 /**
- * Mark an account as rate-limited
+ * Mark an account as rate-limited for a specific model
  *
- * @param {string} [modelId] - Optional model ID for granular rate limiting
+ * @param {Array} accounts - Array of account objects
+ * @param {string} email - Email of the account to mark
+ * @param {number|null} resetMs - Time in ms until rate limit resets
+ * @param {Object} settings - Settings object with cooldownDurationMs
+ * @param {string} modelId - Model ID to mark rate limit for
  * @returns {boolean} True if account was found and marked
  */
-export function markRateLimited(accounts, email, resetMs = null, settings = {}, modelId = null) {
+export function markRateLimited(accounts, email, resetMs = null, settings = {}, modelId) {
     const account = accounts.find(a => a.email === email);
     if (!account) return false;
 
     const cooldownMs = resetMs || settings.cooldownDurationMs || DEFAULT_COOLDOWN_MS;
     const resetTime = Date.now() + cooldownMs;
 
-    if (modelId) {
-        // Mark only for specific model
-        if (!account.modelRateLimits) {
-            account.modelRateLimits = {};
-        }
-        
-        account.modelRateLimits[modelId] = {
-            isRateLimited: true,
-            resetTime: resetTime
-        };
-        
-        logger.warn(
-            `[AccountManager] Rate limited: ${email} (model: ${modelId}). Available in ${formatDuration(cooldownMs)}`
-        );
-    } else {
-        // Mark globally
-        account.isRateLimited = true;
-        account.rateLimitResetTime = resetTime;
-        
-        logger.warn(
-            `[AccountManager] Rate limited: ${email}. Available in ${formatDuration(cooldownMs)}`
-        );
+    if (!account.modelRateLimits) {
+        account.modelRateLimits = {};
     }
+
+    account.modelRateLimits[modelId] = {
+        isRateLimited: true,
+        resetTime: resetTime
+    };
+
+    logger.warn(
+        `[AccountManager] Rate limited: ${email} (model: ${modelId}). Available in ${formatDuration(cooldownMs)}`
+    );
 
     return true;
 }
@@ -186,24 +165,28 @@ export function markInvalid(accounts, email, reason = 'Unknown error') {
 }
 
 /**
- * Get the minimum wait time until any account becomes available
+ * Get the minimum wait time until any account becomes available for a model
  *
  * @param {Array} accounts - Array of account objects
+ * @param {string} modelId - Model ID to check
  * @returns {number} Wait time in milliseconds
  */
-export function getMinWaitTimeMs(accounts) {
-    if (!isAllRateLimited(accounts)) return 0;
+export function getMinWaitTimeMs(accounts, modelId) {
+    if (!isAllRateLimited(accounts, modelId)) return 0;
 
     const now = Date.now();
     let minWait = Infinity;
     let soonestAccount = null;
 
     for (const account of accounts) {
-        if (account.rateLimitResetTime) {
-            const wait = account.rateLimitResetTime - now;
-            if (wait > 0 && wait < minWait) {
-                minWait = wait;
-                soonestAccount = account;
+        if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
+            const limit = account.modelRateLimits[modelId];
+            if (limit.isRateLimited && limit.resetTime) {
+                const wait = limit.resetTime - now;
+                if (wait > 0 && wait < minWait) {
+                    minWait = wait;
+                    soonestAccount = account;
+                }
             }
         }
     }

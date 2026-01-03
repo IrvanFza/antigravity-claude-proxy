@@ -2,6 +2,7 @@
  * Account Selection
  *
  * Handles account picking logic (round-robin, sticky) for cache continuity.
+ * All rate limit checks are model-specific.
  */
 
 import { MAX_WAIT_BEFORE_ERROR_MS } from '../constants.js';
@@ -10,12 +11,31 @@ import { logger } from '../utils/logger.js';
 import { clearExpiredLimits, getAvailableAccounts } from './rate-limits.js';
 
 /**
+ * Check if an account is usable for a specific model
+ * @param {Object} account - Account object
+ * @param {string} modelId - Model ID to check
+ * @returns {boolean} True if account is usable
+ */
+function isAccountUsable(account, modelId) {
+    if (!account || account.isInvalid) return false;
+
+    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
+        const limit = account.modelRateLimits[modelId];
+        if (limit.isRateLimited && limit.resetTime > Date.now()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Pick the next available account (fallback when current is unavailable).
  *
  * @param {Array} accounts - Array of account objects
  * @param {number} currentIndex - Current account index
  * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Optional model ID
+ * @param {string} [modelId] - Model ID to check rate limits for
  * @returns {{account: Object|null, newIndex: number}} The next available account and new index
  */
 export function pickNext(accounts, currentIndex, onSave, modelId = null) {
@@ -37,17 +57,7 @@ export function pickNext(accounts, currentIndex, onSave, modelId = null) {
         const idx = (index + i) % accounts.length;
         const account = accounts[idx];
 
-        let isUsable = !account.isRateLimited && !account.isInvalid;
-        
-        // Check model-specific limit if modelId provided
-        if (isUsable && modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-            const limit = account.modelRateLimits[modelId];
-            if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                isUsable = false;
-            }
-        }
-
-        if (isUsable) {
+        if (isAccountUsable(account, modelId)) {
             account.lastUsed = Date.now();
 
             const position = idx + 1;
@@ -70,7 +80,7 @@ export function pickNext(accounts, currentIndex, onSave, modelId = null) {
  * @param {Array} accounts - Array of account objects
  * @param {number} currentIndex - Current account index
  * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Optional model ID
+ * @param {string} [modelId] - Model ID to check rate limits for
  * @returns {{account: Object|null, newIndex: number}} The current account and index
  */
 export function getCurrentStickyAccount(accounts, currentIndex, onSave, modelId = null) {
@@ -89,18 +99,7 @@ export function getCurrentStickyAccount(accounts, currentIndex, onSave, modelId 
     // Get current account directly (activeIndex = current account)
     const account = accounts[index];
 
-    // Return if available
-    let isUsable = account && !account.isRateLimited && !account.isInvalid;
-
-    // Check model-specific limit if modelId provided
-    if (isUsable && modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-        const limit = account.modelRateLimits[modelId];
-        if (limit.isRateLimited && limit.resetTime > Date.now()) {
-            isUsable = false;
-        }
-    }
-
-    if (isUsable) {
+    if (isAccountUsable(account, modelId)) {
         account.lastUsed = Date.now();
         // Trigger save (don't await to avoid blocking)
         if (onSave) onSave();
@@ -115,7 +114,7 @@ export function getCurrentStickyAccount(accounts, currentIndex, onSave, modelId 
  *
  * @param {Array} accounts - Array of account objects
  * @param {number} currentIndex - Current account index
- * @param {string} [modelId] - Optional model ID
+ * @param {string} [modelId] - Model ID to check rate limits for
  * @returns {{shouldWait: boolean, waitMs: number, account: Object|null}}
  */
 export function shouldWaitForCurrentAccount(accounts, currentIndex, modelId = null) {
@@ -138,12 +137,8 @@ export function shouldWaitForCurrentAccount(accounts, currentIndex, modelId = nu
 
     let waitMs = 0;
 
-    // Check global limit
-    if (account.isRateLimited && account.rateLimitResetTime) {
-        waitMs = account.rateLimitResetTime - Date.now();
-    } 
-    // Check model limit if not globally limited (or if model limit is longer? usually global blocks all)
-    else if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
+    // Check model-specific limit
+    if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
         const limit = account.modelRateLimits[modelId];
         if (limit.isRateLimited && limit.resetTime) {
             waitMs = limit.resetTime - Date.now();
@@ -165,7 +160,7 @@ export function shouldWaitForCurrentAccount(accounts, currentIndex, modelId = nu
  * @param {Array} accounts - Array of account objects
  * @param {number} currentIndex - Current account index
  * @param {Function} onSave - Callback to save changes
- * @param {string} [modelId] - Optional model ID
+ * @param {string} [modelId] - Model ID to check rate limits for
  * @returns {{account: Object|null, waitMs: number, newIndex: number}}
  */
 export function pickStickyAccount(accounts, currentIndex, onSave, modelId = null) {

@@ -20,22 +20,6 @@ import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
 
 /**
- * Check if an error is a rate limit error (429 or RESOURCE_EXHAUSTED)
- * @deprecated Use isRateLimitError from errors.js instead
- */
-function is429Error(error) {
-    return isRateLimitError(error);
-}
-
-/**
- * Check if an error is an auth-invalid error (credentials need re-authentication)
- * @deprecated Use isAuthError from errors.js instead
- */
-function isAuthInvalidError(error) {
-    return isAuthError(error);
-}
-
-/**
  * Send a non-streaming request to Cloud Code with multi-account support
  * Uses SSE endpoint for thinking models (non-streaming doesn't return thinking blocks)
  *
@@ -67,19 +51,19 @@ export async function sendMessage(anthropicRequest, accountManager) {
             logger.info(`[CloudCode] Waiting ${formatDuration(waitMs)} for sticky account...`);
             await sleep(waitMs);
             accountManager.clearExpiredLimits();
-            account = accountManager.getCurrentStickyAccount();
+            account = accountManager.getCurrentStickyAccount(model);
         }
 
         // Handle all accounts rate-limited
         if (!account) {
             if (accountManager.isAllRateLimited(model)) {
-                const allWaitMs = accountManager.getMinWaitTimeMs();
+                const allWaitMs = accountManager.getMinWaitTimeMs(model);
                 const resetTime = new Date(Date.now() + allWaitMs).toISOString();
 
                 // If wait time is too long (> 2 minutes), throw error immediately
                 if (allWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
                     throw new Error(
-                        `RESOURCE_EXHAUSTED: Rate limited. Quota will reset after ${formatDuration(allWaitMs)}. Next available: ${resetTime}`
+                        `RESOURCE_EXHAUSTED: Rate limited on ${model}. Quota will reset after ${formatDuration(allWaitMs)}. Next available: ${resetTime}`
                     );
                 }
 
@@ -163,7 +147,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
                     return convertGoogleToAnthropic(data, anthropicRequest.model);
 
                 } catch (endpointError) {
-                    if (is429Error(endpointError)) {
+                    if (isRateLimitError(endpointError)) {
                         throw endpointError; // Re-throw to trigger account switch
                     }
                     logger.warn(`[CloudCode] Error at ${endpoint}:`, endpointError.message);
@@ -183,12 +167,12 @@ export async function sendMessage(anthropicRequest, accountManager) {
             }
 
         } catch (error) {
-            if (is429Error(error)) {
+            if (isRateLimitError(error)) {
                 // Rate limited - already marked, continue to next account
                 logger.info(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
                 continue;
             }
-            if (isAuthInvalidError(error)) {
+            if (isAuthError(error)) {
                 // Auth invalid - already marked, continue to next account
                 logger.warn(`[CloudCode] Account ${account.email} has invalid credentials, trying next...`);
                 continue;

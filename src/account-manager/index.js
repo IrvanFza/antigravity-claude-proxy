@@ -186,26 +186,6 @@ export class AccountManager {
     }
 
     /**
-     * Check if a specific account is rate-limited (global or model)
-     * @param {string} email - Email of the account to check
-     * @param {string} [modelId] - Optional model ID
-     * @returns {boolean} True if rate-limited
-     */
-    isAccountRateLimited(email, modelId = null) {
-        const account = this.#accounts.find(a => a.email === email);
-        if (!account) return false;
-        
-        if (account.isRateLimited) return true;
-        
-        if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
-            const limit = account.modelRateLimits[modelId];
-            return limit.isRateLimited && limit.resetTime > Date.now();
-        }
-        
-        return false;
-    }
-
-    /**
      * Mark an account as invalid (credentials need re-authentication)
      * @param {string} email - Email of the account to mark
      * @param {string} reason - Reason for marking as invalid
@@ -217,10 +197,11 @@ export class AccountManager {
 
     /**
      * Get the minimum wait time until any account becomes available
+     * @param {string} [modelId] - Optional model ID
      * @returns {number} Wait time in milliseconds
      */
-    getMinWaitTimeMs() {
-        return getMinWait(this.#accounts);
+    getMinWaitTimeMs(modelId = null) {
+        return getMinWait(this.#accounts, modelId);
     }
 
     /**
@@ -278,8 +259,15 @@ export class AccountManager {
      */
     getStatus() {
         const available = this.getAvailableAccounts();
-        const rateLimited = this.#accounts.filter(a => a.isRateLimited);
         const invalid = this.getInvalidAccounts();
+
+        // Count accounts that have any active model-specific rate limits
+        const rateLimited = this.#accounts.filter(a => {
+            if (!a.modelRateLimits) return false;
+            return Object.values(a.modelRateLimits).some(
+                limit => limit.isRateLimited && limit.resetTime > Date.now()
+            );
+        });
 
         return {
             total: this.#accounts.length,
@@ -290,8 +278,7 @@ export class AccountManager {
             accounts: this.#accounts.map(a => ({
                 email: a.email,
                 source: a.source,
-                isRateLimited: a.isRateLimited,
-                rateLimitResetTime: a.rateLimitResetTime,
+                modelRateLimits: a.modelRateLimits || {},
                 isInvalid: a.isInvalid || false,
                 invalidReason: a.invalidReason || null,
                 lastUsed: a.lastUsed
