@@ -41,12 +41,17 @@ export function extractModulePath(error) {
 export function findPackageRoot(nodeFilePath) {
     // Walk up from the .node file to find package.json
     let dir = dirname(nodeFilePath);
-    while (dir && dir !== '/') {
+    while (dir) {
         const packageJsonPath = join(dir, 'package.json');
         if (existsSync(packageJsonPath)) {
             return dir;
         }
-        dir = dirname(dir);
+        const parentDir = dirname(dir);
+        // Stop when we've reached the filesystem root (dirname returns same path)
+        if (parentDir === dir) {
+            break;
+        }
+        dir = parentDir;
     }
     return null;
 }
