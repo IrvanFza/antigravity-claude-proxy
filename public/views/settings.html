@@ -985,7 +985,7 @@
                             class="select select-sm bg-space-800 border-space-border text-white flex-1 font-mono text-xs"
                             :disabled="serverPresets.length === 0 || loadingPreset"
                             :value="selectedServerPreset"
-                            @change="selectedServerPreset = $event.target.value; presetPreviewExpanded = false"
+                            @change="selectedServerPreset = $event.target.value"
                             aria-label="Select server preset">
                             <option value="" disabled x-show="serverPresets.length === 0">No presets available</option>
                             <template x-for="preset in serverPresets" :key="preset.name">
