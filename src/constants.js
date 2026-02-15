@@ -30,7 +30,7 @@ function getAntigravityDbPath() {
  * Generate platform-specific User-Agent string.
  * @returns {string} User-Agent in format "antigravity/version os/arch"
  */
-function getPlatformUserAgent() {
+export function getPlatformUserAgent() {
     const os = platform();
     const architecture = arch();
     return `antigravity/1.16.5 ${os}/${architecture}`;
