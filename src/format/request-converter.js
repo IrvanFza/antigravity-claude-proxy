@@ -19,7 +19,8 @@ import {
     hasUnsignedThinkingBlocks,
     needsThinkingRecovery,
     closeToolLoopForThinking,
-    cleanCacheControl
+    cleanCacheControl,
+    clampGeminiThinkingBudget
 } from './thinking-utils.js';
 import { logger } from '../utils/logger.js';
 
@@ -187,9 +188,10 @@ export function convertAnthropicToGoogle(anthropicRequest) {
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;
         } else if (isGeminiModel) {
             // Gemini thinking config (uses camelCase)
+            // Clamp budget to model-specific max (e.g., Gemini 2.5 Flash max is 24,576)
             const thinkingConfig = {
                 includeThoughts: true,
-                thinkingBudget: thinking?.budget_tokens || 16000
+                thinkingBudget: clampGeminiThinkingBudget(modelName, thinking?.budget_tokens)
             };
             logger.debug(`[RequestConverter] Gemini thinking enabled with budget: ${thinkingConfig.thinkingBudget}`);
 
